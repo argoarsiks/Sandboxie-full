@@ -181,6 +181,24 @@ jobs:
       - name: Merging Build
         run: Installer\copy_build.cmd x64 build_qt6
 
+      - name: Build Installer (Inno Setup)
+        shell: cmd
+        working-directory: Installer
+        run: >
+          "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
+          /Qp
+          /ORelease
+          Sandboxie-Plus.iss
+          /DMyAppVersion=%SbiePlusVer%
+          /DMyAppArch=x64
+          /DMyAppSrc=SbiePlus64
+
+      - name: Upload Installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sandboxie-Plus-Setup-x64
+          path: Installer/Release/Sandboxie-Plus-x64-v*.exe
+
       - name: Collect installer assets
         run: Installer\get_assets.cmd
 
