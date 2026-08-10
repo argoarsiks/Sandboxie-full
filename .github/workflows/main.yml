@@ -71,13 +71,11 @@ on:
       - '**/AUTHORS'
       - '**/COPYING'
 
-env:
-  forbuildVariables: use Installer\buildVariables.cmd file
-
 jobs:
   Build_x64_Qt6:
     runs-on: windows-2022
-    timeout-minutes: 45
+    timeout-minutes: 60
+
     permissions:
       contents: read
 
@@ -92,7 +90,6 @@ jobs:
           call "${{ github.workspace }}\Installer\buildVariables.cmd" build_qt6
           echo qt6_version=%qt6_version% >> %GITHUB_ENV%
           echo qt_version=%qt6_version% >> %GITHUB_ENV%
-          echo SbiePlusVer=%SbiePlusVer% >> %GITHUB_ENV%
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v3
@@ -102,22 +99,34 @@ jobs:
       #
 
       - name: Build Sandboxie x86 (DLLs & svc)
-        run: msbuild /t:build Sandboxie\SandboxDll.sln /p:Configuration="SbieRelease" /p:Platform=Win32 -maxcpucount:8
+        run: >
+          msbuild /t:build Sandboxie\SandboxDll.sln
+          /p:Configuration="SbieRelease"
+          /p:Platform=Win32
+          -maxcpucount:8
 
-      - name: Build Sandboxie x64 (all)
-        run: msbuild /t:build Sandboxie\Sandbox.sln /p:Configuration="SbieRelease" /p:Platform=x64 -maxcpucount:8
+      - name: Build Sandboxie x64
+        run: >
+          msbuild /t:build Sandboxie\Sandbox.sln
+          /p:Configuration="SbieRelease"
+          /p:Platform=x64
+          -maxcpucount:8
 
-      - name: Build Sandboxie x64 (drv)
-        run: msbuild /t:build Sandboxie\SandboxDrv.sln /p:Configuration="SbieRelease" /p:Platform=x64 -maxcpucount:8
+      - name: Build Sandboxie x64 driver
+        run: >
+          msbuild /t:build Sandboxie\SandboxDrv.sln
+          /p:Configuration="SbieRelease"
+          /p:Platform=x64
+          -maxcpucount:8
 
       #
-      # Prepare Qt Framework
+      # Prepare Qt
       #
 
       - name: Install Qt6 x64
         run: SandboxiePlus\install_qt.cmd x64
 
-      - name: Installing Jom
+      - name: Install Jom
         run: SandboxiePlus\install_jom.cmd
 
       #
@@ -128,129 +137,131 @@ jobs:
         run: SandboxiePlus\qmake_plus.cmd x64 build_qt6
 
       - name: Build SbieShell x64
-        run: msbuild /t:restore,build -p:RestorePackagesConfig=true SandboxiePlus\SbieShell\SbieShell.sln /p:Configuration="Release" /p:Platform=x64
+        run: >
+          msbuild /t:restore,build
+          -p:RestorePackagesConfig=true
+          SandboxiePlus\SbieShell\SbieShell.sln
+          /p:Configuration="Release"
+          /p:Platform=x64
 
       #
       # Compile Sandboxie Tools
       #
 
       - name: Build Sandboxie-Tools x64
-        run: msbuild /t:build SandboxieTools\SandboxieTools.sln /p:Configuration="Release" /p:Platform=x64 -maxcpucount:8
+        run: >
+          msbuild /t:build SandboxieTools\SandboxieTools.sln
+          /p:Configuration="Release"
+          /p:Platform=x64
+          -maxcpucount:8
 
       #
-      # Merge everything together
+      # Prepare installer files
       #
 
-      - name: Add missing languages for Qt6
+      - name: Add missing Qt6 languages
         run: Installer\fix_qt5_languages.cmd x64 build_qt6
 
-      - name: Get openssl binaries
+      - name: Get OpenSSL binaries
         run: Installer\get_openssl.cmd
 
-      - name: Get 7z binaries
+      - name: Get 7-Zip binaries
         run: Installer\get_7zip.cmd
 
-      - name: Merging Build
+      - name: Merge build
         run: Installer\copy_build.cmd x64 build_qt6
 
+      - name: Collect installer assets
+        run: Installer\get_assets.cmd
+
       #
-      # Prepare Inno Setup input directory
-      #
-      # Sandboxie-Plus.iss expects:
-      #
-      #   .\ReleaseSbiePlus64\*
-      #
-      # relative to the Installer directory.
+      # Install Inno Setup
       #
 
-      - name: Prepare Inno Setup files
-        shell: pwsh
+      - name: Install Inno Setup 6.3.3
+        shell: powershell
         run: |
-          $source = "${{ github.workspace }}\Installer\SbiePlus_x64"
-          $destination = "${{ github.workspace }}\Installer\ReleaseSbiePlus64"
+          $url = "https://files.jrsoftware.org/is/6/innosetup-6.3.3.exe"
+          $installer = "$env:RUNNER_TEMP\innosetup.exe"
 
-          if (-not (Test-Path $source)) {
-              throw "Build output not found: $source"
-          }
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile $installer
 
-          if (Test-Path $destination) {
-              Remove-Item $destination -Recurse -Force
-          }
+          Start-Process `
+            -FilePath $installer `
+            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-" `
+            -Wait `
+            -NoNewWindow
 
-          New-Item -ItemType Directory -Path $destination | Out-Null
-
-          Copy-Item `
-              -Path "$source\*" `
-              -Destination $destination `
-              -Recurse `
-              -Force
-
-          Write-Host "Prepared Inno Setup input:"
-          Get-ChildItem $destination -Recurse |
-              Select-Object FullName, Length
-
-      #
-      # Build the actual Sandboxie-Plus setup.exe
-      #
-
-      - name: Install Inno Setup
-        shell: pwsh
-        run: |
-          choco install innosetup --no-progress --yes
-
-      - name: Build Sandboxie-Plus installer
-        shell: pwsh
-        working-directory: Installer
+      - name: Verify Inno Setup
+        shell: powershell
         run: |
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
 
           if (-not (Test-Path $iscc)) {
-              throw "ISCC.exe not found: $iscc"
+              throw "ISCC.exe was not found: $iscc"
           }
 
-          if (-not $env:SbiePlusVer) {
-              throw "SbiePlusVer is empty"
+          & $iscc /?
+          if ($LASTEXITCODE -ne 0) {
+              throw "Inno Setup compiler check failed with exit code $LASTEXITCODE"
           }
 
-          Write-Host "Building Sandboxie-Plus installer"
-          Write-Host "Version: $env:SbiePlusVer"
+      #
+      # Build installer
+      #
 
-          & $iscc `
-              /ORelease `
-              "Sandboxie-Plus.iss" `
-              "/DMyAppVersion=$env:SbiePlusVer" `
-              "/DMyAppArch=x64" `
-              "/DMyAppSrc=SbiePlus64"
+      - name: Disable installer code signing
+        shell: powershell
+        run: |
+          $source = "Installer\Sandboxie-Plus.iss"
+          $target = "Installer\Sandboxie-Plus-CI.iss"
+
+          Copy-Item $source $target -Force
+
+          $content = Get-Content $target -Raw
+
+          $content = $content -replace `
+              '(?m)^[ \t]*SignTool[ \t]*=.*\r?\n', ''
+
+          Set-Content `
+              -Path $target `
+              -Value $content `
+              -Encoding UTF8
+
+          Write-Host "Installer script prepared:"
+          Write-Host $target
+
+      - name: Build Sandboxie-Plus installer
+        shell: powershell
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          $script = "Installer\Sandboxie-Plus-CI.iss"
+
+          & $iscc $script
 
           if ($LASTEXITCODE -ne 0) {
               throw "Inno Setup failed with exit code $LASTEXITCODE"
           }
 
-      - name: Verify installer
-        shell: pwsh
-        working-directory: Installer
+      #
+      # Show resulting files
+      #
+
+      - name: Find installer
+        shell: powershell
         run: |
-          Get-ChildItem .\Release -Filter "*.exe" -File |
-              Select-Object FullName, Length, LastWriteTime
-
-          if (-not (Get-ChildItem .\Release -Filter "*.exe" -File)) {
-              throw "No installer was produced"
-          }
+          Write-Host "=== Installer directory ==="
+          Get-ChildItem "Installer" -Recurse -File |
+              Where-Object {
+                  $_.Extension -in ".exe", ".msi"
+              } |
+              Select-Object FullName, Length
 
       #
-      # Existing artifacts
+      # Upload artifacts
       #
-
-      - name: Collect installer assets
-        run: Installer\get_assets.cmd
-
-      - name: Upload installer assets
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: Assets
-          path: |
-            Installer/Assets/*
-          retention-days: 60
 
       - name: Upload Sandboxie x64
         uses: actions/upload-artifact@v7.0.1
@@ -260,194 +271,10 @@ jobs:
             Installer/SbiePlus_x64/*
           retention-days: 60
 
-      #
-      # NEW: actual Inno Setup installer
-      #
-
-      - name: Upload Sandboxie-Plus Setup x64
+      - name: Upload Sandboxie-Plus Setup
         uses: actions/upload-artifact@v7.0.1
         with:
           name: Sandboxie-Plus-Setup-x64
           path: |
-            Installer/Release/*.exe
-          retention-days: 60
-
-  Build_ARM64_Qt6:
-    runs-on: windows-2022
-    timeout-minutes: 45
-    permissions:
-      contents: read
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-
-      - name: Load Variables from buildVariables.cmd
-        shell: cmd
-        run: |
-          @echo on
-          call "${{ github.workspace }}\Installer\buildVariables.cmd" build_qt6
-          echo qt6_version=%qt6_version% >> %GITHUB_ENV%
-          echo SbiePlusVer=%SbiePlusVer% >> %GITHUB_ENV%
-
-      - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v3
-
-      #
-      # Compile Sandboxie Core
-      #
-
-      - name: Build Sandboxie x86 (DLLs & svc)
-        run: msbuild /t:build Sandboxie\SandboxDll.sln /p:Configuration="SbieRelease" /p:Platform=Win32 -maxcpucount:8
-
-      - name: Build Sandboxie ARM64 (all)
-        run: msbuild /t:build Sandboxie\Sandbox.sln /p:Configuration="SbieRelease" /p:Platform=ARM64 -maxcpucount:8
-
-      - name: Build Sandboxie ARM64EC (DLL)
-        run: msbuild /t:build Sandboxie\SandboxDll.sln /p:Configuration="SbieRelease" /p:Platform=ARM64EC -maxcpucount:8
-
-      - name: Build Sandboxie ARM64 (drv)
-        run: msbuild /t:build Sandboxie\SandboxDrv.sln /p:Configuration="SbieRelease" /p:Platform=ARM64 -maxcpucount:8
-
-      #
-      # Prepare Qt Framework
-      #
-
-      - name: Install Qt6 x64
-        uses: jurplel/install-qt-action@v4.3.1
-        with:
-          version: '${{ env.qt6_version }}'
-          arch: 'win64_msvc2022_64'
-          tools: 'tools_opensslv3_x64'
-          cache: true
-
-      - name: Install Qt6 ARM64
-        uses: jurplel/install-qt-action@v4.3.1
-        with:
-          version: '${{ env.qt6_version }}'
-          arch: 'win64_msvc2022_arm64_cross_compiled'
-          tools: 'tools_opensslv3_x64'
-          cache: true
-
-      - name: Installing Jom
-        run: SandboxiePlus\install_jom.cmd
-
-      #
-      # Compile Sandboxie Plus
-      #
-
-      - name: Build Sandboxie-Plus ARM64
-        run: SandboxiePlus\qmake_plus.cmd ARM64 build_qt6
-
-      - name: Build SbieShell ARM64
-        run: msbuild /t:restore,build -p:RestorePackagesConfig=true SandboxiePlus\SbieShell\SbieShell.sln /p:Configuration="Release" /p:Platform=ARM64
-
-      #
-      # Compile Sandboxie Tools
-      #
-
-      - name: Build Sandboxie-Tools ARM64
-        run: msbuild /t:build SandboxieTools\SandboxieTools.sln /p:Configuration="Release" /p:Platform=ARM64 -maxcpucount:8
-
-      #
-      # Merge everything together
-      #
-
-      - name: Add missing languages for Qt6
-        run: Installer\fix_qt5_languages.cmd x64 build_qt6
-
-      - name: Get openssl binaries
-        run: Installer\get_openssl.cmd
-
-      - name: Get 7z binaries
-        run: Installer\get_7zip.cmd
-
-      - name: Merging Build
-        run: Installer\copy_build.cmd ARM64 build_qt6
-
-      #
-      # Prepare Inno Setup input directory
-      #
-
-      - name: Prepare Inno Setup files
-        shell: pwsh
-        run: |
-          $source = "${{ github.workspace }}\Installer\SbiePlus_a64"
-          $destination = "${{ github.workspace }}\Installer\ReleaseSbiePlusARM64"
-
-          if (-not (Test-Path $source)) {
-              throw "Build output not found: $source"
-          }
-
-          if (Test-Path $destination) {
-              Remove-Item $destination -Recurse -Force
-          }
-
-          New-Item -ItemType Directory -Path $destination | Out-Null
-
-          Copy-Item `
-              -Path "$source\*" `
-              -Destination $destination `
-              -Recurse `
-              -Force
-
-      #
-      # Build ARM64 setup
-      #
-
-      - name: Install Inno Setup
-        shell: pwsh
-        run: |
-          choco install innosetup --no-progress --yes
-
-      - name: Build Sandboxie-Plus installer ARM64
-        shell: pwsh
-        working-directory: Installer
-        run: |
-          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-
-          if (-not (Test-Path $iscc)) {
-              throw "ISCC.exe not found: $iscc"
-          }
-
-          if (-not $env:SbiePlusVer) {
-              throw "SbiePlusVer is empty"
-          }
-
-          & $iscc `
-              /ORelease `
-              "Sandboxie-Plus.iss" `
-              "/DMyAppVersion=$env:SbiePlusVer" `
-              "/DMyAppArch=arm64" `
-              "/DMyAppSrc=SbiePlusARM64"
-
-          if ($LASTEXITCODE -ne 0) {
-              throw "Inno Setup failed with exit code $LASTEXITCODE"
-          }
-
-      - name: Verify ARM64 installer
-        shell: pwsh
-        working-directory: Installer
-        run: |
-          Get-ChildItem .\Release -Filter "*.exe" -File |
-              Select-Object FullName, Length, LastWriteTime
-
-          if (-not (Get-ChildItem .\Release -Filter "*.exe" -File)) {
-              throw "No ARM64 installer was produced"
-          }
-
-      - name: Upload Sandboxie ARM64
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: Sandboxie_ARM64
-          path: |
-            Installer/SbiePlus_a64/*
-          retention-days: 60
-
-      - name: Upload Sandboxie-Plus Setup ARM64
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: Sandboxie-Plus-Setup-ARM64
-          path: |
-            Installer/Release/*.exe
+            Installer/**/*.exe
           retention-days: 60
